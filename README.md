@@ -1,11 +1,14 @@
 # detex
 
 [![CI](https://github.com/adrhill/detex/actions/workflows/ci.yml/badge.svg)](https://github.com/adrhill/detex/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/adrhill/detex/graph/badge.svg)](https://codecov.io/gh/adrhill/detex)
+[![Benchmarks](https://img.shields.io/badge/benchmarks-view-blue)](https://adrianhill.de/detex/dev/bench/)
 
 `detex` detects Jacobian sparsity patterns in JAX.
 
 > [!WARNING]
 > Currently, the primary purpose of this package is to **evaluate the capabilities of coding agents** [on a familiar task I consider to be out-of-distribution](https://github.com/adrhill/SparseConnectivityTracer.jl) from the usual language model training data.
+> Surprisingly, it seems to work.
 >
 > Use `detex` at your own risk. 
 
@@ -46,7 +49,10 @@ print(pattern.toarray().astype(int))
 
 ## How it works
 
-`detex` uses `jax.make_jaxpr` to trace the function into a jaxpr — JAX's intermediate representation that captures the computation as a sequence of primitive operations. It then walks this graph, propagating **index sets** through each primitive. Each input element starts with its own index `{i}`, and operations combine these sets (e.g., `z = x * y` means `z`'s indices are the union of `x`'s and `y`'s). Output index sets reveal which inputs affect each output.
+`detex` uses `jax.make_jaxpr` to trace the function into a jaxpr — JAX's intermediate representation that captures the computation as a sequence of primitive operations. 
+It then walks this graph, propagating **index sets** through each primitive. 
+Each input element starts with its own index `{i}`, and operations combine these sets. 
+Output index sets reveal which inputs affect each output.
 The result is a global sparsity pattern, valid for all input values.
 
 ## Related work
