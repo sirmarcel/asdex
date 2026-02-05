@@ -1,78 +1,70 @@
-# detex - Sparsity Detection Exploration in JAX/Python
+# detex - Automatic Sparse Differentiation in JAX
 
-This folder contains an exploration of Jacobian sparsity detection implemented in JAX, inspired by [SparseConnectivityTracer.jl](https://github.com/adrhill/SparseConnectivityTracer.jl) (SCT).
+This package implements [Automatic Sparse Differentiation](https://iclr-blogposts.github.io/2025/blog/sparse-autodiff/) (ASD) in JAX.
 
 ## Overview
 
-The implementation uses **jaxpr graph analysis** to detect global sparsity patterns. Unlike JVP-based approaches, this analyzes the computation graph structure directly, producing results valid for ALL inputs.
+ASD exploits Jacobian sparsity to reduce the cost of computing sparse Jacobians:
+
+1. **Detection**: Analyze the jaxpr computation graph to detect the global sparsity pattern
+2. **Coloring**: Assign colors to rows so that rows sharing non-zero columns get different colors
+3. **Decompression**: Compute one VJP per color instead of one per row, then extract the sparse Jacobian
 
 ## Structure
 
 ```
 src/detex/
-├── __init__.py         # Public API (jacobian_sparsity)
-├── _indexset.py        # IndexSet and BitSet implementations
-└── _propagate.py       # Jaxpr traversal and primitive handlers
-
-tests/
-├── test_jacobian_sparsity.py   # Core sparsity detection tests
-├── test_benchmarks.py          # Performance benchmarks
-├── test_bitset.py              # BitSet unit tests
-└── test_conv.py                # Convolution tests
+├── __init__.py         # Public API
+├── detection.py        # Sparsity pattern detection via jaxpr analysis
+├── coloring.py         # Row-wise graph coloring
+├── decompression.py    # Sparse Jacobian computation via VJPs
+└── _propagate/         # Primitive handlers for index set propagation
 ```
+
+The structure of the test folder is described in `tests/CLAUDE.md`.
 
 ## Development
 
 ```bash
-# Install dependencies and pre-commit hooks
-uv sync --group dev
-uv run pre-commit install
-
-# Run tests
-uv run pytest
-
 # Lint and format
 uv run ruff check --fix .    # lint + auto-fix
 uv run ruff format .         # format
 
 # Type check
 uv run ty check
+
+# Run tests
+uv run pytest
 ```
-
-**Important**: Always run both `ruff` and `ty` after making changes.
-
-## Key Concepts
-
-1. **Global vs Local Sparsity**: This implements global sparsity (valid for all inputs). Local sparsity would require tracking actual values through control flow.
-
-2. **Element-wise Tracking**: The implementation tracks dependencies per-element, not per-variable. This is essential for detecting diagonal patterns like `f(x) = x^2`.
-
-3. **Primitive Handling**: Each JAX primitive (`slice`, `concatenate`, `add`, etc.) has specific propagation rules for index sets.
 
 ## Architecture
 
 ```
-jacobian_sparsity(f, n)
+sparse_jacobian(f, x)
   │
-  ├─ make_jaxpr(f) → computation graph
+  ├─ 1. DETECTION: jacobian_sparsity(f, n)
+  │     ├─ make_jaxpr(f) → computation graph
+  │     ├─ Initialize env: input[i] depends on {i}
+  │     ├─ prop_jaxpr() → propagate index sets through primitives
+  │     └─ Build BCOO sparsity pattern from output dependencies
   │
-  ├─ Initialize env: input[i] depends on {i}
+  ├─ 2. COLORING: color_rows(sparsity)
+  │     ├─ Build conflict graph (rows sharing columns)
+  │     └─ Greedy coloring → rows with same color are orthogonal
   │
-  ├─ prop_jaxpr(jaxpr, input_indices)
-  │     │
-  │     └─ For each equation:
-  │          prop_equation(eqn, env) → primitive-specific handler
-  │
-  └─ Build sparse COO matrix from output dependencies
+  └─ 3. DECOMPRESSION
+        ├─ For each color: VJP with combined seed vector
+        └─ Extract J[i,j] = grad[color[i]][j]
 ```
-
-The `env` maps each `Var` to its per-element dependency sets (`list[IdxSet]`).
 
 ## Design philosophy
 
 When writing new code, adhere to these design principles:
 
 - **Minimize complexity**: The primary goal of software design is to minimize complexity—anything that makes a system hard to understand and modify.
+
 - **Information hiding**: Each module should encapsulate design decisions that other modules don't need to know about, preventing information leakage across boundaries.
+
 - **Pull complexity downward**: It's better for a module to be internally complex if it keeps the interface simple for others. Don't expose complexity to callers.
 
+- **Favor exceptions over wrong results**: Raise errors for unknown edge cases rather than guessing. 
