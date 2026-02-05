@@ -39,7 +39,7 @@ uv add git+https://github.com/adrhill/asdex.git
 
 ## Example
 
-Consider the squared differences function $f(x)_i = (x_{i+1} - x_i)^2$, which has a tridiagonal Jacobian:
+Consider the squared differences function $f(x)\_i = (x\_{i+1} - x\_i)^2$, which has a banded Jacobian:
 
 ```python
 import jax
