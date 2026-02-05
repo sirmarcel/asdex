@@ -15,15 +15,15 @@
 For a function $f: \mathbb{R}^n \to \mathbb{R}^m$, the Jacobian $J \in \mathbb{R}^{m \times n}$ is defined as $J_{ij} = \frac{\partial f_i}{\partial x_j}$.
 Computing the full Jacobian requires $n$ forward-mode AD passes or $m$ reverse-mode passes.
 But many Jacobians are *sparse*: most entries are structurally zero for all inputs.
+The same applies to Hessians of scalar-valued functions.
 
-`asdex` exploits this sparsity in three steps:
+`asdex` exploits this sparsity:
 1. **Detect sparsity** by tracing the function into a jaxpr and propagating index sets through the graph
-2. **Color the sparsity pattern** to find orthogonal rows in the Jacobian
-3. **Compute the Jacobian** with one VJP per color instead of one per row
+2. **Color the sparsity pattern** to find orthogonal rows
+3. **Compute the sparse Jacobian** with one VJP per color instead of one per row
 
 This reduces the number of reverse-mode AD passes from $m$ to the number of colors.
-For large and very sparse problems, this often yields significant speedups,
-especially if the cost of sparsity detection and coloring can be amortized over multiple sparse Jacobian computations.
+For large sparse problems, this can yield significant speedups when the cost of sparsity detection and coloring is amortized over multiple evaluations.
 
 ## Installation
 
@@ -38,6 +38,8 @@ uv add git+https://github.com/adrhill/asdex.git
 ```
 
 ## Example
+
+### Jacobians
 
 Consider the squared differences function $f(x)\_i = (x\_{i+1} - x\_i)^2$, which has a banded Jacobian:
 
@@ -56,15 +58,19 @@ print(pattern.todense().astype(int))
 #  [0 1 1 0 0]
 #  [0 0 1 1 0]
 #  [0 0 0 1 1]]
+```
 
+Color orthogonal rows:
+```python
 # Color rows: only 2 colors needed for this banded structure
 colors, num_colors = color_rows(pattern)
-print(f"Colors: {colors}")  
-# Colors: [0 1 0 1]
-print(f"VJP passes: {num_colors} (instead of 4)")  
-# VJP passes: 2 (instead of 4)
+print(f"Colors: {colors}")                         # Colors: [0 1 0 1]
+print(f"VJP passes: {num_colors} (instead of 4)")  # VJP passes: 2 (instead of 4)
+```
 
-# Compute sparse Jacobian
+Compute the sparse Jacobian using the precomputed pattern and colors:
+
+```python
 x = np.array([1.0, 2.0, 4.0, 3.0, 5.0])
 J = sparse_jacobian(f, x, sparsity=pattern, colors=colors)  # of type jax.experimental.sparse.BCOO
 print(J.todense())
@@ -74,32 +80,88 @@ print(J.todense())
 #  [ 0.  0.  0. -4.  4.]]
 
 # Verify: matches jax.jacobian
-print((J.todense() == jax.jacobian(f)(x)).all())
-# True
+print((J.todense() == jax.jacobian(f)(x)).all())  # True
 ```
 
-The sparsity pattern and coloring depend only on the function structure, not the input values. 
+The sparsity pattern and coloring depend only on the function structure, not the input values.
 Precompute them once and reuse them for repeated evaluations:
 
 ```python
 pattern = jacobian_sparsity(f, n=1000)
 colors, _ = color_rows(pattern)
-for x in points:
+for x in inputs:
     J = sparse_jacobian(f, x, sparsity=pattern, colors=colors)
+```
+
+### Hessians
+
+For scalar-valued functions $f: \mathbb{R}^n \to \mathbb{R}$, `asdex` can detect Hessian sparsity and compute sparse Hessians:
+
+```python
+import jax
+import numpy as np
+from asdex import hessian_sparsity, color_rows, sparse_hessian
+
+def g(x):
+    return x[0]**2 + x[1]**2 + x[0]*x[1]
+
+# Detect sparsity pattern
+pattern = hessian_sparsity(g, n=3)
+print(pattern.todense().astype(int))
+# [[1 1 0]
+#  [1 1 0]
+#  [0 0 0]]
+```
+
+Color orthogonal rows:
+```python
+# Color rows: 2 colors needed
+colors, num_colors = color_rows(pattern)
+print(f"Colors: {colors}")                         # Colors: [0 1 0]
+print(f"HVP passes: {num_colors} (instead of 3)")  # HVP passes: 2 (instead of 3)
+```
+
+Compute the sparse Hessian using the precomputed pattern and colors:
+
+```python
+x = np.array([1.0, 2.0, 3.0])
+H = sparse_hessian(g, x, sparsity=pattern, colors=colors)
+print(H.todense())
+# [[2. 1. 0.]
+#  [1. 2. 0.]
+#  [0. 0. 0.]]
+
+# Verify: matches jax.hessian
+print((H.todense() == jax.hessian(g)(x)).all())  # True
+```
+
+The sparsity pattern and coloring can be precomputed and reused, just like for Jacobians:
+
+```python
+pattern = hessian_sparsity(g, n=1000)
+colors, _ = color_rows(pattern)
+for x in inputs:
+    H = sparse_hessian(g, x, sparsity=pattern, colors=colors)
 ```
 
 ## How it works
 
-**Sparsity detection**: `asdex` uses `jax.make_jaxpr` to trace the function into a jaxpr (JAX's intermediate representation) and propagates **index sets** through each primitive operation.
+**Jacobian sparsity detection**: `asdex` uses `jax.make_jaxpr` to trace the function into a jaxpr (JAX's intermediate representation) and propagates **index sets** through each primitive operation.
 Each input element starts with its own index `{i}`, and operations combine these sets.
 Output index sets reveal which inputs affect each output.
 The result is a global sparsity pattern, valid for all input values.
+
+**Hessian sparsity detection**: Since the Hessian is the Jacobian of the gradient, `hessian_sparsity(f, n)` simply calls `jacobian_sparsity(jax.grad(f), n)`.
+The sparsity interpreter composes naturally with JAX's autodiff transforms.
 
 **Row coloring**: Two rows can be computed together if they don't share any non-zero columns.
 `asdex` builds a conflict graph where rows sharing columns are connected, then greedily assigns colors so that no column contains two same-colored rows.
 
 **Sparse Jacobian**: For each color, `asdex` computes a single VJP with a seed vector that has 1s at the positions of all rows with that color.
 Due to the coloring constraint, each column contributes to at most one row per color, so the results can be directly extracted into the sparse Jacobian.
+
+**Sparse Hessian**: For each color, `asdex` computes a Hessian-vector product (HVP) using forward-over-reverse AD: `jax.jvp(jax.grad(f), (x,), (v,))`.
+This is more efficient than reverse-over-reverse (VJP on gradient) because forward-mode has less overhead for the outer differentiation.
 
 ## Related work
 
