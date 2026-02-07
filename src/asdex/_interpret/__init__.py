@@ -11,9 +11,21 @@ and applies the appropriate handler for each equation.
 import numpy as np
 from jax._src.core import Jaxpr, JaxprEqn
 
-from ._commons import ConstVals, Deps, IndexSets, atom_numel, index_sets, union_all
+from ._broadcast import prop_broadcast_in_dim
+from ._commons import (
+    ConstVals,
+    Deps,
+    IndexSets,
+    atom_numel,
+    forward_const_vals,
+    index_sets,
+    seed_const_vals,
+    union_all,
+)
 from ._concatenate import prop_concatenate
+from ._cond import prop_cond
 from ._conv import prop_conv_general_dilated
+from ._dynamic_slice import prop_dynamic_slice, prop_dynamic_update_slice
 from ._elementwise import (
     prop_binary_elementwise,
     prop_convert_element_type,
@@ -23,10 +35,11 @@ from ._elementwise import (
     propagate_const_binary,
 )
 from ._gather import prop_gather
-from ._indexing import prop_broadcast_in_dim, prop_reshape, prop_slice, prop_squeeze
+from ._indexing import prop_reshape, prop_slice, prop_squeeze
 from ._reduction import prop_reduce_sum
 from ._scatter import prop_scatter
 from ._select import prop_select_n
+from ._while import prop_while
 
 # Ufuncs for evaluating constant values during tracing.
 # Used to propagate static index values through arithmetic to gather/scatter.
@@ -99,20 +112,22 @@ def prop_jaxpr(
 
 def prop_nested_jaxpr(eqn: JaxprEqn, deps: Deps, const_vals: ConstVals) -> None:
     """Handle primitives with nested jaxprs by recursively tracing."""
-    nested_jaxpr = eqn.params.get("jaxpr")
-    if nested_jaxpr is None:
+    closed = eqn.params.get("jaxpr")
+    if closed is None:
         msg = (
             f"Primitive '{eqn.primitive.name}' has no 'jaxpr' parameter. "
             "Please report this at https://github.com/adrhill/asdex/issues"
         )
         raise ValueError(msg)
 
-    # Handle ClosedJaxpr wrapper
-    if hasattr(nested_jaxpr, "jaxpr"):
-        nested_jaxpr = nested_jaxpr.jaxpr
+    # Unwrap ClosedJaxpr, seeding const_vals for captured constants
+    if hasattr(closed, "jaxpr"):
+        seed_const_vals(const_vals, closed.jaxpr.constvars, closed.consts)
+        closed = closed.jaxpr
 
+    forward_const_vals(const_vals, eqn.invars, closed.invars)
     input_indices = [index_sets(deps, invar) for invar in eqn.invars]
-    output_indices = prop_jaxpr(nested_jaxpr, input_indices, const_vals)
+    output_indices = prop_jaxpr(closed, input_indices, const_vals)
 
     for outvar, indices in zip(eqn.outvars, output_indices, strict=False):
         deps[outvar] = indices
@@ -126,22 +141,24 @@ def prop_custom_call(eqn: JaxprEqn, deps: Deps, const_vals: ConstVals) -> None:
     which is stored in the `call_jaxpr` parameter.
 
     The custom derivative rules don't affect which outputs depend on which
-    inputs - they only change how derivatives are computed.
+    inputs — they only change how derivatives are computed.
     """
-    call_jaxpr = eqn.params.get("call_jaxpr")
-    if call_jaxpr is None:
+    closed = eqn.params.get("call_jaxpr")
+    if closed is None:
         msg = (
             f"Primitive '{eqn.primitive.name}' has no 'call_jaxpr' parameter. "
             "Please report this at https://github.com/adrhill/asdex/issues"
         )
         raise ValueError(msg)
 
-    # Handle ClosedJaxpr wrapper
-    if hasattr(call_jaxpr, "jaxpr"):
-        call_jaxpr = call_jaxpr.jaxpr
+    # Unwrap ClosedJaxpr, seeding const_vals for captured constants
+    if hasattr(closed, "jaxpr"):
+        seed_const_vals(const_vals, closed.jaxpr.constvars, closed.consts)
+        closed = closed.jaxpr
 
+    forward_const_vals(const_vals, eqn.invars, closed.invars)
     input_indices = [index_sets(deps, invar) for invar in eqn.invars]
-    output_indices = prop_jaxpr(call_jaxpr, input_indices, const_vals)
+    output_indices = prop_jaxpr(closed, input_indices, const_vals)
 
     for outvar, indices in zip(eqn.outvars, output_indices, strict=False):
         deps[outvar] = indices
@@ -159,6 +176,7 @@ def prop_dispatch(eqn: JaxprEqn, deps: Deps, const_vals: ConstVals) -> None:
             | "argmax"
             | "argmin"
             | "clz"
+            | "clamp"
             | "population_count"
         ):
             prop_zero_derivative(eqn, deps)
@@ -247,6 +265,20 @@ def prop_dispatch(eqn: JaxprEqn, deps: Deps, const_vals: ConstVals) -> None:
             prop_select_n(eqn, deps, const_vals)
         case "iota":
             _prop_iota(eqn, deps, const_vals)
+        case "while":
+            prop_while(eqn, deps, const_vals)
+        case "cond":
+            prop_cond(eqn, deps, const_vals)
+        case "dynamic_slice":
+            prop_dynamic_slice(eqn, deps, const_vals)
+        case "dynamic_update_slice":
+            prop_dynamic_update_slice(eqn, deps, const_vals)
+        case "not":
+            prop_zero_derivative(eqn, deps)
+        # TODO: add precise handlers for remaining control flow operators.
+        # https://docs.jax.dev/en/latest/jax.lax.html#control-flow-operators
+        case "scan" | "associative_scan":
+            prop_throw_error(eqn, deps)
         # Conservative fallback: all outputs depend on all inputs.
         # sort is correctly conservative since sorting is a global operation.
         case (
@@ -259,6 +291,11 @@ def prop_dispatch(eqn: JaxprEqn, deps: Deps, const_vals: ConstVals) -> None:
             | "split"
             | "tile"
             | "transpose"
+            | "select_if_vmap"
+            | "nonbatchable"
+            | "unvmap_any"
+            | "unvmap_max"
+            | "pure_callback"
         ):
             prop_conservative_fallback(eqn, deps)
         case _:

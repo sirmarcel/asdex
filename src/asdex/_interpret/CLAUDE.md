@@ -9,13 +9,17 @@ through primitives to determine Jacobian sparsity patterns.
 __init__.py        # prop_jaxpr, prop_dispatch, fallbacks
 _commons.py        # IndexSets, Deps, ConstVals, utilities
 _elementwise.py    # unary, binary, zero-derivative, integer_pow, convert_element_type
-_indexing.py       # slice, squeeze, broadcast_in_dim, reshape
+_indexing.py       # slice, squeeze, reshape
+_broadcast.py      # broadcast_in_dim
 _concatenate.py    # concatenate
 _reduction.py      # reduce_sum
 _gather.py         # gather (static/dynamic indices)
 _scatter.py        # scatter, scatter-add (static/dynamic indices)
 _select.py         # select_n
 _conv.py           # conv_general_dilated
+_while.py          # while_loop (fixed-point iteration)
+_cond.py           # cond (union over branches)
+_dynamic_slice.py  # dynamic_slice, dynamic_update_slice
 ```
 
 ## Key Types
@@ -52,6 +56,7 @@ Don't narrate what the code already says.
 2. **Math**: The Jacobian structure in concise mathematical notation.
 3. **Example**: A concrete input/output trace showing dependency sets before and after.
 4. **Jaxpr**: The `eqn.invars` and `eqn.params` layout the handler reads.
+5. **URL**: Link to the JAX docs for the primitive, as a bare URL on the last line.
 
 ## References
 
