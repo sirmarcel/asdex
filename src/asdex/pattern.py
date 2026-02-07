@@ -1,11 +1,16 @@
-"""SparsityPattern data structure optimized for the detection->coloring->decompression pipeline."""
+"""Pattern data structures for the detection->coloring->decompression pipeline.
+
+Pretty-printing adapted from SparseArrays.jl (MIT license)
+Copyright (c) 2018-2024 SparseArrays.jl contributors: https://github.com/JuliaSparse/SparseArrays.jl/contributors
+https://github.com/JuliaSparse/SparseArrays.jl/
+"""
 
 from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
 from functools import cached_property
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import jax.numpy as jnp
 import numpy as np
@@ -72,11 +77,22 @@ class SparsityPattern:
     def col_to_rows(self) -> dict[int, list[int]]:
         """Mapping from column index to list of row indices with non-zeros in that column.
 
-        Used by the coloring algorithm to build the conflict graph.
+        Used by the coloring algorithm to build the row conflict graph.
         """
         result: dict[int, list[int]] = defaultdict(list)
         for row, col in zip(self.rows, self.cols, strict=True):
             result[int(col)].append(int(row))
+        return dict(result)
+
+    @cached_property
+    def row_to_cols(self) -> dict[int, list[int]]:
+        """Mapping from row index to list of column indices with non-zeros in that row.
+
+        Used by the coloring algorithm to build the column conflict graph.
+        """
+        result: dict[int, list[int]] = defaultdict(list)
+        for row, col in zip(self.rows, self.cols, strict=True):
+            result[int(row)].append(int(col))
         return dict(result)
 
     # -------------------------------------------------------------------------
@@ -278,37 +294,174 @@ class SparsityPattern:
             lines.append("".join(chr(0x2800 + bits) for bits in row))
         return "\n".join(lines)
 
+    def _render(self) -> str:
+        """Return visualization string without header.
+
+        Uses dot display (●/⋅) for small matrices, braille for large ones.
+        Follows Julia's SparseArrays display heuristics.
+        """
+        if self.m <= self._SMALL_ROWS and self.n <= self._SMALL_COLS:
+            return self._render_dots()
+
+        braille = self._render_braille()
+        braille_lines = braille.split("\n")
+        if braille_lines and braille_lines[0] != "(empty)":
+            n_lines = len(braille_lines)
+            bordered = []
+            for i, line in enumerate(braille_lines):
+                if i == 0:
+                    bordered.append("⎡" + line + "⎤")
+                elif i == n_lines - 1:
+                    bordered.append("⎣" + line + "⎦")
+                else:
+                    bordered.append("⎢" + line + "⎥")
+            return "\n".join(bordered)
+        return braille
+
     def __str__(self) -> str:
         """Return string representation with visualization.
 
         Uses dot display (●/⋅) for small matrices, braille for large ones.
         Follows Julia's SparseArrays display heuristics.
         """
-        header = f"SparsityPattern({self.m}×{self.n}, nnz={self.nse}, density={self.density:.1%})"
-
-        # Use dot display for small matrices, braille for large ones
-        if self.m <= self._SMALL_ROWS and self.n <= self._SMALL_COLS:
-            visualization = self._render_dots()
-        else:
-            braille = self._render_braille()
-            # Add bracket borders (Julia-style, consistent width with braille)
-            braille_lines = braille.split("\n")
-            if braille_lines and braille_lines[0] != "(empty)":
-                n_lines = len(braille_lines)
-                bordered = []
-                for i, line in enumerate(braille_lines):
-                    if i == 0:
-                        bordered.append("⎡" + line + "⎤")
-                    elif i == n_lines - 1:
-                        bordered.append("⎣" + line + "⎦")
-                    else:
-                        bordered.append("⎢" + line + "⎥")
-                visualization = "\n".join(bordered)
-            else:
-                visualization = braille
-
-        return f"{header}\n{visualization}"
+        header = f"SparsityPattern({self.m}×{self.n}, nnz={self.nse}, sparsity={1 - self.density:.1%})"
+        return f"{header}\n{self._render()}"
 
     def __repr__(self) -> str:
         """Return compact representation."""
         return f"SparsityPattern(shape={self.shape}, nnz={self.nse})"
+
+
+@dataclass(frozen=True, repr=False)
+class ColoredPattern:
+    """Result of a graph coloring for sparse differentiation.
+
+    Attributes:
+        sparsity: The sparsity pattern that was colored.
+        colors: Color assignment array.
+            Shape ``(m,)`` for ``"VJP"`` mode,
+            ``(n,)`` for ``"JVP"`` and ``"HVP"`` modes.
+        num_colors: Total number of colors used.
+        mode: The AD primitive used per color.
+            ``"VJP"`` for row-colored Jacobians,
+            ``"JVP"`` for column-colored Jacobians,
+            ``"HVP"`` for star-colored Hessians.
+    """
+
+    sparsity: SparsityPattern
+    colors: NDArray[np.int32]
+    num_colors: int
+    mode: Literal["JVP", "VJP", "HVP"]
+
+    @property
+    def _compresses_columns(self) -> bool:
+        """Whether coloring compresses columns (JVP/HVP) or rows (VJP)."""
+        return self.mode in ("JVP", "HVP")
+
+    def __repr__(self) -> str:
+        """Return compact representation."""
+        sp = self.sparsity
+        m, n = sp.shape
+        c = self.num_colors
+        return (
+            f"ColoredPattern({m}×{n}, nnz={sp.nse}, sparsity={1 - sp.density:.1%}, "
+            f"{self.mode}, {c} {'color' if c == 1 else 'colors'})"
+        )
+
+    def _compressed_pattern(self) -> SparsityPattern:
+        """Build the compressed sparsity pattern after coloring.
+
+        For column compression (JVP/HVP, shape ``(m, num_colors)``):
+        entry ``(i, c)`` is present iff any column ``j``
+        with ``colors[j] == c`` has a nonzero at ``(i, j)``.
+
+        For row compression (VJP, shape ``(num_colors, n)``):
+        entry ``(c, j)`` is present iff any row ``i``
+        with ``colors[i] == c`` has a nonzero at ``(i, j)``.
+        """
+        comp_rows: list[int] = []
+        comp_cols: list[int] = []
+
+        if self._compresses_columns:
+            # Compress columns: (m, n) → (m, num_colors)
+            seen: set[tuple[int, int]] = set()
+            for i, j in zip(self.sparsity.rows, self.sparsity.cols, strict=True):
+                c = int(self.colors[j])
+                entry = (int(i), c)
+                if entry not in seen:
+                    seen.add(entry)
+                    comp_rows.append(entry[0])
+                    comp_cols.append(entry[1])
+            shape = (self.sparsity.m, self.num_colors)
+        else:
+            # Compress rows: (m, n) → (num_colors, n)
+            seen = set()
+            for i, j in zip(self.sparsity.rows, self.sparsity.cols, strict=True):
+                c = int(self.colors[i])
+                entry = (c, int(j))
+                if entry not in seen:
+                    seen.add(entry)
+                    comp_rows.append(entry[0])
+                    comp_cols.append(entry[1])
+            shape = (self.num_colors, self.sparsity.n)
+
+        return SparsityPattern.from_coordinates(comp_rows, comp_cols, shape)
+
+    def __str__(self) -> str:
+        """Return string with AD savings summary and visualization.
+
+        Column compression (JVP/HVP) shows side-by-side with ``→``.
+        Row compression (VJP) shows stacked with ``↓``.
+        """
+        m, n = self.sparsity.shape
+        c = self.num_colors
+        s = "" if c == 1 else "s"
+
+        def _plural(count: int, word: str) -> str:
+            return f"{count} {word}" if count == 1 else f"{count} {word}s"
+
+        if self.mode == "HVP":
+            instead = f"instead of {_plural(n, 'HVP')}"
+        else:
+            instead = f"instead of {_plural(m, 'VJP')} or {_plural(n, 'JVP')}"
+        header = f"{repr(self)}\n  {c} {self.mode}{s} ({instead})"
+
+        compressed = self._compressed_pattern()
+        left_lines = self.sparsity._render().split("\n")
+        right_lines = compressed._render().split("\n")
+
+        if self._compresses_columns:
+            viz = _render_side_by_side(left_lines, right_lines)
+        else:
+            viz = _render_stacked(left_lines, right_lines)
+
+        return f"{header}\n{viz}"
+
+
+def _render_side_by_side(left_lines: list[str], right_lines: list[str]) -> str:
+    """Join two visualizations side-by-side with ``→`` on the middle line."""
+    max_left = max((len(line) for line in left_lines), default=0)
+    n_lines = max(len(left_lines), len(right_lines))
+    mid = n_lines // 2
+
+    result = []
+    for i in range(n_lines):
+        left = left_lines[i] if i < len(left_lines) else ""
+        right = right_lines[i] if i < len(right_lines) else ""
+        sep = " → " if i == mid else "   "
+        result.append(f"{left:<{max_left}}{sep}{right}")
+    return "\n".join(result)
+
+
+def _render_stacked(top_lines: list[str], bottom_lines: list[str]) -> str:
+    """Join two visualizations stacked with centered ``↓`` between them."""
+    top_width = max((len(line) for line in top_lines), default=0)
+    bottom_width = max((len(line) for line in bottom_lines), default=0)
+    full_width = max(top_width, bottom_width)
+
+    result = list(top_lines)
+    arrow = "↓"
+    pad = full_width // 2
+    result.append(" " * pad + arrow)
+    result.extend(bottom_lines)
+    return "\n".join(result)
