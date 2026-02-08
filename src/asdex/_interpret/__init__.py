@@ -37,7 +37,7 @@ from ._elementwise import (
 )
 from ._gather import prop_gather
 from ._pad import prop_pad
-from ._reduction import prop_reduce_sum
+from ._reduce import prop_reduce
 from ._reshape import prop_reshape
 from ._rev import prop_rev
 from ._scatter import prop_scatter
@@ -183,6 +183,9 @@ def prop_dispatch(eqn: JaxprEqn, deps: Deps, const_vals: ConstVals) -> None:
             | "clz"
             | "clamp"
             | "population_count"
+            | "reduce_and"
+            | "reduce_or"
+            | "reduce_xor"
         ):
             prop_zero_derivative(eqn, deps)
         case "eq" | "ne" | "lt" | "le" | "gt" | "ge":
@@ -258,8 +261,8 @@ def prop_dispatch(eqn: JaxprEqn, deps: Deps, const_vals: ConstVals) -> None:
             | "square"
         ):
             prop_unary_elementwise(eqn, deps)
-        case "reduce_sum":
-            prop_reduce_sum(eqn, deps)
+        case "reduce_sum" | "reduce_max" | "reduce_min" | "reduce_prod":
+            prop_reduce(eqn, deps)
         case "convert_element_type" | "bitcast_convert_type" | "reduce_precision":
             prop_convert_element_type(eqn, deps)
         case "stop_gradient":
@@ -295,9 +298,7 @@ def prop_dispatch(eqn: JaxprEqn, deps: Deps, const_vals: ConstVals) -> None:
         # Conservative fallback: all outputs depend on all inputs.
         # sort is correctly conservative since sorting is a global operation.
         case (
-            "reduce_max"
-            | "reduce_prod"
-            | "sort"
+            "sort"
             | "split"
             | "tile"
             | "select_if_vmap"

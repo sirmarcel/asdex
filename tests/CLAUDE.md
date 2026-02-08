@@ -22,7 +22,8 @@ tests/
     ├── test_scatter.py         # Scatter (at[].set, at[].add, segment_sum)
     ├── test_elementwise.py     # Elementwise operations
     ├── test_dynamic_slice.py   # dynamic_slice, dynamic_update_slice
-    ├── test_reduction.py       # Reduction operations (sum, max, argmax)
+    ├── test_reduce.py          # reduce_sum, reduce_max, reduce_min, reduce_prod, argmax
+    ├── test_reduce_and.py      # reduce_and, reduce_or, reduce_xor (bitwise reductions)
     ├── test_rev.py             # Rev (reverse/flip) operations
     ├── test_conv.py            # Convolution tests
     ├── test_internals.py       # Internal propagation, fallbacks, custom_call

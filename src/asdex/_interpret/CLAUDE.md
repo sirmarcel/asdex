@@ -16,7 +16,7 @@ _broadcast.py      # broadcast_in_dim
 _concatenate.py    # concatenate
 _transpose.py      # transpose (dimension permutation)
 _rev.py            # rev (reverse along dimensions)
-_reduction.py      # reduce_sum
+_reduce.py         # reduce_sum, reduce_max, reduce_min, reduce_prod
 _gather.py         # gather (static/dynamic indices)
 _scatter.py        # scatter, scatter-add (static/dynamic indices)
 _select.py         # select_n
