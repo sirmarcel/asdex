@@ -51,6 +51,19 @@ J = jac_fn(x)
 Instead of 999 VJPs or 1000 JVPs,
 `asdex` computes the full sparse Jacobian with just 2 JVPs.
 
+## Acknowledgements
+
+This package is built with Claude Code on the basis of previous work by Adrian Hill (@adrhill), Guillaume Dalle (@gdalle), and Alexis Montoison (@amontoison) in the [Julia programming language](https://julialang.org):
+
+- A. Hill, G. Dalle, A. Montoison: [_An Illustrated Guide to Automatic Sparse Differentiation_](https://iclr-blogposts.github.io/2025/blog/sparse-autodiff/), ICLR Blogpost, 2025
+- A. Hill & G. Dalle: [_Sparser, Better, Faster, Stronger: Efficient Automatic Differentiation for Sparse Jacobians and Hessians_](https://openreview.net/forum?id=GtXSN52nIW), TMLR, 2025
+- A. Montoison, G. Dalle, A. Gebremedhin: [_Revisiting Sparse Matrix Coloring and Bicoloring_](https://arxiv.org/abs/2505.07308), Preprint, 2025
+- A. Hill, G. Dalle: [`SparseConnectivityTracer.jl`](https://github.com/adrhill/SparseConnectivityTracer.jl)
+- G. Dalle, A. Montoison: [`SparseMatrixColorings.jl`](https://github.com/gdalle/SparseMatrixColorings.jl)
+- G. Dalle: [`sparsediffax`](https://github.com/gdalle/sparsediffax)
+
+which in turn also stands on the shoulders of giants -- notably Andreas Griewank, Andrea Walther, and Assefaw Gebremedhin.
+
 ## Next Steps
 
 - [Getting Started](tutorials/getting-started.md) — step-by-step tutorial

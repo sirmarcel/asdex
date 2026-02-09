@@ -13,8 +13,9 @@ that detects sparsity patterns from the computation graph,
 then uses graph coloring to minimize the number of AD passes needed.
 
 > [!WARNING]
-> The original purpose of this package was to evaluate the capabilities of coding agents on a task [that is familiar to me](https://openreview.net/pdf?id=GtXSN52nIW).
-> Surprisingly, it seems to work.
+> `asdex` is in early development.
+> The API may change without notice.
+> Use at your own risk.
 
 ## Installation
 
@@ -72,7 +73,15 @@ Instead of 49 VJPs or 50 JVPs,
 - [Explanation](https://adrianhill.de/asdex/explanation/sparsity-detection/) — how and why it works
 - [API Reference](https://adrianhill.de/asdex/reference/) — full API documentation
 
-## Related work
+## Acknowledgements
 
-- [SparseConnectivityTracer.jl](https://github.com/adrhill/SparseConnectivityTracer.jl): `asdex` started as a primitive port of this Julia package, which provides global and local Jacobian and Hessian sparsity detection via operator overloading.
-- [SparseMatrixColorings.jl](https://github.com/gdalle/SparseMatrixColorings.jl): Julia package for coloring algorithms on sparse matrices.
+This package is built with Claude Code on the basis of previous work by Adrian Hill (@adrhill), Guillaume Dalle (@gdalle), and Alexis Montoison (@amontoison) in the [Julia programming language](https://julialang.org):
+
+- A. Hill, G. Dalle, A. Montoison: [_An Illustrated Guide to Automatic Sparse Differentiation_](https://iclr-blogposts.github.io/2025/blog/sparse-autodiff/), ICLR Blogpost, 2025
+- A. Hill & G. Dalle: [_Sparser, Better, Faster, Stronger: Efficient Automatic Differentiation for Sparse Jacobians and Hessians_](https://openreview.net/forum?id=GtXSN52nIW), TMLR, 2025
+- A. Montoison, G. Dalle, A. Gebremedhin: [_Revisiting Sparse Matrix Coloring and Bicoloring_](https://arxiv.org/abs/2505.07308), Preprint, 2025
+- A. Hill, G. Dalle: [`SparseConnectivityTracer.jl`](https://github.com/adrhill/SparseConnectivityTracer.jl)
+- G. Dalle, A. Montoison: [`SparseMatrixColorings.jl`](https://github.com/gdalle/SparseMatrixColorings.jl)
+- G. Dalle: [`sparsediffax`](https://github.com/gdalle/sparsediffax)
+
+which in turn also stands on the shoulders of giants -- notably Andreas Griewank, Andrea Walther, and Assefaw Gebremedhin.
