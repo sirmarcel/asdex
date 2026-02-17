@@ -89,6 +89,25 @@ def union_all(sets: Sequence[set[int]]) -> set[int]:
     return result
 
 
+def check_no_index_sets(deps: Deps, atom: Atom, primitive_name: str) -> None:
+    """Verify that an atom carries no input dependencies.
+
+    Some handlers assume that auxiliary inputs
+    (index arrays, kernel weights, selectors)
+    are constants with empty dependency sets.
+    This function validates that assumption
+    and raises an informative error when it is violated.
+    """
+    if any(index_sets(deps, atom)):
+        msg = (
+            f"'{primitive_name}' handler assumes an auxiliary input "
+            "has no dependency on the function's inputs, "
+            "but found non-empty index sets. "
+            "Please help out asdex's development by reporting this at https://github.com/adrhill/asdex/issues"
+        )
+        raise ValueError(msg)
+
+
 def conservative_indices(all_indices: IndexSets, out_size: int) -> IndexSets:
     """Build conservative output index sets where every element depends on the union of all inputs."""
     combined = union_all(all_indices)
@@ -222,7 +241,8 @@ def fixed_point_loop(
         msg = (
             f"Fixed-point iteration did not converge after "
             f"{_MAX_FIXED_POINT_ITERS} iterations. "
-            "Please report this at https://github.com/adrhill/asdex/issues"
+            "Please help out asdex's development by reporting this at "
+            "https://github.com/adrhill/asdex/issues"
         )
         raise RuntimeError(msg)  # pragma: no cover
 
