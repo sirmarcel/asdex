@@ -3,11 +3,11 @@
 from jax._src.core import JaxprEqn
 
 from ._commons import (
-    _MAX_FIXED_POINT_ITERS,
     ConstVals,
     Deps,
     IndexSets,
     PropJaxprFn,
+    fixed_point_loop,
     forward_const_vals,
     index_sets,
     seed_const_vals,
@@ -54,37 +54,16 @@ def prop_while(
     forward_const_vals(const_vals, body_consts, body_jaxpr.invars[:body_nconsts])
 
     # Initialize carry deps from the initial values
-    carry_deps: list[IndexSets] = [index_sets(deps, v) for v in carry_init]
+    carry_indices: list[IndexSets] = [index_sets(deps, v) for v in carry_init]
 
     # body_jaxpr invars: [body_consts..., carry...]
-    const_input: list[IndexSets] = [index_sets(deps, v) for v in body_consts]
+    const_inputs: list[IndexSets] = [index_sets(deps, v) for v in body_consts]
 
-    # Fixed-point iteration:
-    # each iteration propagates the body and unions the result with current carry.
-    # Since deps only grow (monotone on a finite lattice), this converges.
-    for _iteration in range(_MAX_FIXED_POINT_ITERS):
-        body_input = const_input + carry_deps
-        body_output = prop_jaxpr(body_jaxpr, body_input, const_vals)
+    def iterate(carry: list[IndexSets]) -> list[IndexSets]:
+        return prop_jaxpr(body_jaxpr, const_inputs + carry, const_vals)
 
-        # Union body output deps into carry deps
-        changed = False
-        for i in range(n_carry):
-            for j in range(len(carry_deps[i])):
-                before = len(carry_deps[i][j])
-                carry_deps[i][j] |= body_output[i][j]
-                if len(carry_deps[i][j]) > before:
-                    changed = True
-
-        if not changed:
-            break
-    else:
-        msg = (
-            f"Fixed-point iteration did not converge after "
-            f"{_MAX_FIXED_POINT_ITERS} iterations. "
-            "Please report this at https://github.com/adrhill/asdex/issues"
-        )
-        raise RuntimeError(msg)  # pragma: no cover
+    fixed_point_loop(iterate, carry_indices, n_carry)
 
     # Write final carry deps to outvars
-    for outvar, out_deps in zip(eqn.outvars, carry_deps, strict=True):
-        deps[outvar] = out_deps
+    for outvar, out_indices in zip(eqn.outvars, carry_indices, strict=True):
+        deps[outvar] = out_indices

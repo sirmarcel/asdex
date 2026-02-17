@@ -6,10 +6,6 @@ from collections.abc import Callable, Sequence
 import numpy as np
 from jax._src.core import Jaxpr, Literal, Var
 
-# =============================================================================
-# Type aliases
-# =============================================================================
-
 IndexSets = list[set[int]]
 """Per-element dependency index sets for an array."""
 
@@ -29,24 +25,19 @@ _MAX_FIXED_POINT_ITERS = 500
 """Safety bound for fixed-point iteration in while_loop and scan."""
 
 
-# =============================================================================
-# Utility functions
-# =============================================================================
-
-
-def union_all(sets: Sequence[set[int]]) -> set[int]:
-    """Union all sets together, returning a new set."""
-    if not sets:
-        return set()
-    result: set[int] = set()
-    for s in sets:
-        result |= s
-    return result
+# Shape and size
 
 
 def numel(shape: Sequence[int]) -> int:
     """Compute the total number of elements from a shape tuple."""
     return math.prod(shape) if shape else 1
+
+
+def atom_shape(atom: Atom) -> tuple[int, ...]:
+    """Get the shape of a variable or literal."""
+    if isinstance(atom, Literal):
+        return tuple(getattr(atom.val, "shape", ()))
+    return tuple(getattr(atom.aval, "shape", ()))
 
 
 def atom_numel(atom: Atom) -> int:
@@ -56,6 +47,16 @@ def atom_numel(atom: Atom) -> int:
         return numel(tuple(shape)) if shape else 1
     shape = getattr(atom.aval, "shape", ())
     return numel(tuple(shape)) if shape else 1
+
+
+# Atom value access
+
+
+def index_sets(deps: Deps, atom: Atom) -> IndexSets:
+    """Get the index sets for a variable or literal."""
+    if isinstance(atom, Literal):
+        return [set() for _ in range(atom_numel(atom))]
+    return deps.get(atom, [set()])
 
 
 def atom_const_val(atom: Atom, const_vals: ConstVals) -> np.ndarray | None:
@@ -75,11 +76,84 @@ def atom_const_val(atom: Atom, const_vals: ConstVals) -> np.ndarray | None:
     return None
 
 
-def index_sets(deps: Deps, atom: Atom) -> IndexSets:
-    """Get the index sets for a variable or literal."""
-    if isinstance(atom, Literal):
-        return [set() for _ in range(atom_numel(atom))]
-    return deps.get(atom, [set()])
+# Index set operations
+
+
+def union_all(sets: Sequence[set[int]]) -> set[int]:
+    """Union all sets together, returning a new set."""
+    if not sets:
+        return set()
+    result: set[int] = set()
+    for s in sets:
+        result |= s
+    return result
+
+
+def conservative_indices(all_indices: IndexSets, out_size: int) -> IndexSets:
+    """Build conservative output index sets where every element depends on the union of all inputs."""
+    combined = union_all(all_indices)
+    return [combined.copy() for _ in range(out_size)]
+
+
+# Position maps
+
+
+def position_map(shape: Sequence[int]) -> np.ndarray:
+    """Build an array where each element holds its own flat position.
+
+    For shape ``(2, 3)``, returns ``[[0, 1, 2], [3, 4, 5]]``.
+    Applying operations (transpose, slice, etc.) to this array
+    reveals which input position each output position reads from.
+    """
+    return np.arange(numel(shape)).reshape(shape)
+
+
+def permute_indices(
+    in_indices: IndexSets, permutation_map: Sequence[int] | np.ndarray
+) -> IndexSets:
+    """Build output index sets by permuting through a flat index array.
+
+    Each output element ``i`` copies its index set from ``in_indices[permutation_map[i]]``.
+    This is the common pattern for permutation-like ops
+    (transpose, rev, slice, reshape, broadcast, etc.)
+    where each output reads exactly one input element.
+    """
+    return [in_indices[j].copy() for j in permutation_map]
+
+
+# Coordinate helpers
+
+
+def row_strides(shape: Sequence[int]) -> tuple[int, ...]:
+    """Compute row-major strides for multi-dimensional index tracking.
+
+    Used to convert between flat indices and coordinates when propagating
+    dependencies through slice and broadcast_in_dim.
+    Each stride tells how many flat elements to skip
+    when incrementing one coordinate position.
+
+    For shape (2, 3, 4): row_strides = (12, 4, 1) since moving one step in dim 0
+    skips 3*4=12 elements, dim 1 skips 4 elements, and dim 2 skips 1 element.
+    """
+    result: list[int] = []
+    stride = 1
+    for dim in reversed(shape):
+        result.append(stride)
+        stride *= dim
+    return tuple(reversed(result))
+
+
+def flat_to_coords(flat: int, strides: tuple[int, ...]) -> list[int]:
+    """Convert a flat index to multi-dimensional coordinates using row-major strides."""
+    coord = []
+    remaining = flat
+    for s in strides:
+        coord.append(remaining // s)
+        remaining %= s
+    return coord
+
+
+# Const value propagation
 
 
 def seed_const_vals(const_vals: ConstVals, constvars, consts) -> None:
@@ -111,42 +185,45 @@ def forward_const_vals(
             const_vals[inner] = val
 
 
-def atom_shape(atom: Atom) -> tuple[int, ...]:
-    """Get the shape of a variable or literal."""
-    if isinstance(atom, Literal):
-        return tuple(getattr(atom.val, "shape", ()))
-    return tuple(getattr(atom.aval, "shape", ()))
+# Fixed-point iteration
 
 
-def flat_to_coords(flat: int, strides: tuple[int, ...]) -> list[int]:
-    """Convert a flat index to multi-dimensional coordinates using row-major strides."""
-    coord = []
-    remaining = flat
-    for s in strides:
-        coord.append(remaining // s)
-        remaining %= s
-    return coord
+def fixed_point_loop(
+    iterate_fn: Callable[[list[IndexSets]], list[IndexSets]],
+    carry: list[IndexSets],
+    n_carry: int,
+) -> list[IndexSets]:
+    """Run ``iterate_fn`` on carry index sets until they stabilize.
 
+    Used by ``while_loop`` and ``scan`` to propagate index sets
+    through loops via fixed-point iteration.
+    Since index sets only grow and are bounded in size
+    (i.e., monotone on a finite lattice),
+    this always converges.
 
-def conservative_deps(all_indices: IndexSets, out_size: int) -> IndexSets:
-    """Build conservative output deps where every element depends on the union of all inputs."""
-    all_deps = union_all(all_indices)
-    return [all_deps.copy() for _ in range(out_size)]
-
-
-def row_strides(shape: Sequence[int]) -> tuple[int, ...]:
-    """Compute row-major strides for multi-dimensional index tracking.
-
-    Used to convert between flat indices and coordinates when propagating
-    dependencies through slice and broadcast_in_dim. Each stride tells how
-    many flat elements to skip when incrementing one coordinate position.
-
-    For shape (2, 3, 4): row_strides = (12, 4, 1) since moving one step in dim 0
-    skips 3*4=12 elements, dim 1 skips 4 elements, and dim 2 skips 1 element.
+    Mutates ``carry`` in place and returns the final body output
+    (needed by ``scan`` for ``y_slice`` extraction; ignored by ``while_loop``).
     """
-    result: list[int] = []
-    stride = 1
-    for dim in reversed(shape):
-        result.append(stride)
-        stride *= dim
-    return tuple(reversed(result))
+    body_output: list[IndexSets] = []
+    for _iteration in range(_MAX_FIXED_POINT_ITERS):
+        body_output = iterate_fn(carry)
+
+        changed = False
+        for i in range(n_carry):
+            for j in range(len(carry[i])):
+                before = len(carry[i][j])
+                carry[i][j] |= body_output[i][j]
+                if len(carry[i][j]) > before:
+                    changed = True
+
+        if not changed:
+            break
+    else:
+        msg = (
+            f"Fixed-point iteration did not converge after "
+            f"{_MAX_FIXED_POINT_ITERS} iterations. "
+            "Please report this at https://github.com/adrhill/asdex/issues"
+        )
+        raise RuntimeError(msg)  # pragma: no cover
+
+    return body_output
