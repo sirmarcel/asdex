@@ -102,10 +102,13 @@ def test_scatter_dynamic_indices():
 
 
 @pytest.mark.array_ops
+@pytest.mark.fallback
 def test_scatter_2d():
-    """2D scatter falls back to conservative.
+    """2D scatter with non-batched multi-index falls back to conservative.
 
-    Multi-dimensional scatter patterns don't match the optimized 1D path.
+    TODO(scatter): ``mat.at[0, :2].set(updates)`` could track precise
+    per-element dependencies, but the current handler unions operand
+    and update deps across all outputs.
     """
 
     def f(x):
@@ -114,9 +117,26 @@ def test_scatter_2d():
         return mat.at[0, :2].set(updates.flatten()).flatten()
 
     result = jacobian_sparsity(f, input_shape=3).todense().astype(int)
-    # At minimum, updated positions depend on x[0] and x[1]
-    assert result[0, 0] == 1
-    assert result[1, 1] == 1
+    # Conservative: all outputs depend on all update inputs.
+    # TODO(scatter): the true pattern is:
+    #   [[1, 0, 0],   out[0] = mat[0,0] <- x[0]
+    #    [0, 1, 0],   out[1] = mat[0,1] <- x[1]
+    #    [0, 0, 0],   out[2] = mat[0,2] <- constant 0
+    #    [0, 0, 0],   out[3] = mat[1,0] <- constant 0
+    #    [0, 0, 0],   out[4] = mat[1,1] <- constant 0
+    #    [0, 0, 0]]   out[5] = mat[1,2] <- constant 0
+    expected = np.array(
+        [
+            [1, 1, 0],
+            [1, 1, 0],
+            [1, 1, 0],
+            [1, 1, 0],
+            [1, 1, 0],
+            [1, 1, 0],
+        ],
+        dtype=int,
+    )
+    np.testing.assert_array_equal(result, expected)
 
 
 @pytest.mark.array_ops

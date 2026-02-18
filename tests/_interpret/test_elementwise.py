@@ -78,6 +78,35 @@ def test_binary_broadcast_leading_dim():
 
 
 @pytest.mark.elementwise
+def test_binary_broadcast_dependent_operands():
+    """Broadcasting with both operands depending on input tracks row dependencies.
+
+    For mul of (3,4) * (3,1) where both sides depend on x,
+    out[i,j] depends on all inputs in row i (block-diagonal 4x4 blocks).
+    This catches the flat modular indexing bug that constant-operand tests miss.
+    """
+
+    def f(x):
+        mat = x.reshape(2, 3)
+        row_sums = mat.sum(axis=1, keepdims=True)  # (2,1), depends on x
+        return (mat * row_sums).reshape(-1)
+
+    result = jacobian_sparsity(f, input_shape=6).todense().astype(int)
+    # Each output in row i depends on all 3 inputs in row i.
+    # fmt: off
+    expected = np.array([
+        [1,1,1, 0,0,0],
+        [1,1,1, 0,0,0],
+        [1,1,1, 0,0,0],
+        [0,0,0, 1,1,1],
+        [0,0,0, 1,1,1],
+        [0,0,0, 1,1,1],
+    ], dtype=int)
+    # fmt: on
+    np.testing.assert_array_equal(result, expected)
+
+
+@pytest.mark.elementwise
 def test_convert_element_type_propagates_const():
     """convert_element_type propagates const values for downstream gather.
 
