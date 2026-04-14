@@ -304,33 +304,40 @@ class ColoredPattern:
         - off-diagonal: use ``compressed[colors[i]][j]`` if ``colors[i]``
           is unique among column ``j``'s neighbors;
           otherwise ``compressed[colors[j]][i]``.
+
+        The uniqueness check is vectorised via a single ``np.unique`` pass
+        over ``(col, colors[row])`` keys, so the cost is
+        ``O(nnz log nnz)`` instead of ``O(nnz * max_col_degree)`` in pure
+        Python. Star-coloring guarantees that whenever direction A
+        (``colors[i]`` in column ``j``) is non-unique, direction B
+        (``colors[j]`` in column ``i``) is unique — otherwise the pattern
+        would contain a 2-coloured 4-path, which ``color_symmetric``
+        forbids.
         """
-        rows = self.sparsity.rows
-        cols = self.sparsity.cols
-        col_to_rows = self.sparsity.col_to_rows
+        rows = np.asarray(self.sparsity.rows, dtype=np.int64)
+        cols = np.asarray(self.sparsity.cols, dtype=np.int64)
+        colors = np.asarray(self.colors, dtype=np.int64)
+        num_colors = int(self.num_colors)
 
-        color_idx = np.empty(len(rows), dtype=np.intp)
-        elem_idx = np.empty(len(rows), dtype=np.intp)
+        if rows.size == 0:
+            empty = np.empty(0, dtype=np.intp)
+            return empty, empty
 
-        for k, (i, j) in enumerate(zip(rows, cols, strict=True)):
-            i, j = int(i), int(j)
-            if i == j:
-                color_idx[k] = self.colors[i]
-                elem_idx[k] = i
-            else:
-                color_i = self.colors[i]
-                unique = True
-                for r in col_to_rows.get(j, []):
-                    if r != i and self.colors[r] == color_i:
-                        unique = False
-                        break
-                if unique:
-                    color_idx[k] = color_i
-                    elem_idx[k] = j
-                else:
-                    color_idx[k] = self.colors[j]
-                    elem_idx[k] = i
+        row_colors = colors[rows]
+        col_colors = colors[cols]
 
+        # count_at_entry[k] = number of nonzero rows r in column cols[k]
+        # with colors[r] == colors[rows[k]]. Direction A is valid iff this
+        # count equals 1 (i.e. rows[k] is the only such row). num_colors
+        # may be 0 for an all-zero pattern; handled above via early return.
+        stride = max(num_colors, 1)
+        keys = cols * stride + row_colors
+        _, inverse, counts = np.unique(keys, return_inverse=True, return_counts=True)
+        count_at_entry = counts[inverse]
+
+        direction_a = count_at_entry == 1
+        color_idx = np.where(direction_a, row_colors, col_colors).astype(np.intp)
+        elem_idx = np.where(direction_a, cols, rows).astype(np.intp)
         return color_idx, elem_idx
 
     @cached_property

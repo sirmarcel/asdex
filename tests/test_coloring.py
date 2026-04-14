@@ -6,6 +6,7 @@ https://github.com/gdalle/SparseMatrixColorings.jl
 See also: Dalle & Montoison (2025), https://arxiv.org/abs/2505.07308
 """
 
+import time
 import warnings
 
 import jax
@@ -1151,6 +1152,80 @@ def test_hessian_star_decompression_non_unique_branch():
     result = hessian_from_coloring(f, coloring)(x).todense()
 
     assert_allclose(result, expected, rtol=1e-5)
+
+
+@pytest.mark.coloring
+@pytest.mark.parametrize("seed", range(10))
+def test_star_extraction_indices_decompression(seed: int):
+    """Vectorised ``_star_extraction_indices`` reproduces a random symmetric Hessian.
+
+    Random patterns exercise both direction-A (unique color in column) and
+    direction-B (fallback) branches of the extraction, and check that the
+    per-entry direction choice yields the correct dense Hessian after
+    decompression.
+    """
+    rng = np.random.default_rng(seed)
+    n = int(rng.integers(10, 25))
+    p = float(rng.uniform(0.25, 0.6))
+    edges: list[tuple[int, int]] = [
+        (i, j) for i in range(n) for j in range(i + 1, n) if rng.random() < p
+    ]
+    rows = list(range(n)) + [i for i, j in edges] + [j for i, j in edges]
+    cols = list(range(n)) + [j for i, j in edges] + [i for i, j in edges]
+    sparsity = _make_pattern(rows, cols, (n, n))
+
+    # Random symmetric matrix supported on the pattern.
+    values = rng.standard_normal(len(edges))
+    diag = rng.standard_normal(n)
+    dense = np.zeros((n, n))
+    dense[np.arange(n), np.arange(n)] = diag
+    for (i, j), v in zip(edges, values, strict=True):
+        dense[i, j] = v
+        dense[j, i] = v
+
+    def f(x):
+        return 0.5 * x @ (jnp.asarray(dense) @ x)
+
+    x = rng.standard_normal(n)
+    expected = jax.hessian(f)(x)
+
+    colors_arr, num = color_symmetric(sparsity)
+    coloring = ColoredPattern(
+        sparsity,
+        colors=colors_arr,
+        num_colors=num,
+        symmetric=True,
+        mode="fwd_over_rev",
+    )
+    result = hessian_from_coloring(f, coloring)(x).todense()
+    assert_allclose(np.asarray(result), expected, atol=1e-10)
+
+
+@pytest.mark.coloring
+def test_star_extraction_indices_vectorised():
+    """``_star_extraction_indices`` is O(nnz) - no Python loop over entries.
+
+    Builds a banded pattern with >10k nonzeros and asserts the property
+    evaluates in well under a second. A regression to the old Python
+    double-loop takes tens of seconds even at this size.
+    """
+    sparsity = _make_banded(3000, half_bandwidth=4)
+    colors_arr, num = color_symmetric(sparsity)
+    coloring = ColoredPattern(
+        sparsity,
+        colors=colors_arr,
+        num_colors=num,
+        symmetric=True,
+        mode="fwd_over_rev",
+    )
+
+    t0 = time.perf_counter()
+    color_idx, elem_idx = coloring._star_extraction_indices
+    elapsed = time.perf_counter() - t0
+
+    assert color_idx.shape == (sparsity.nnz,)
+    assert elem_idx.shape == (sparsity.nnz,)
+    assert elapsed < 1.0, f"extraction took {elapsed:.2f}s - Python loop regressed?"
 
 
 # DenseColoringWarning tests
